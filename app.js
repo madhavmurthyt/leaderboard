@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { sequelize } from './models/index.js';
 import redis from './config/redis.js';
 import { setupDatabase } from './services/dbSetup.js';
+import { syncLeaderboardsFromDB } from './services/leaderboardSync.js';
 import { generalLimiter } from './middleware/rateLimiter.js';
 import errorHandler from './middleware/errorHandler.js';
 
@@ -85,6 +86,10 @@ const startServer = async () => {
     
     // Connect to Redis
     await redis.connect();
+    
+    // Sync leaderboards from PostgreSQL to Redis
+    // This rebuilds Redis data if it was lost (e.g., Redis restart)
+    await syncLeaderboardsFromDB();
     
     // Start Express server
     app.listen(PORT, () => {

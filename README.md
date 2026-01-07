@@ -10,6 +10,37 @@ A high-performance, real-time leaderboard system built with Node.js, PostgreSQL,
 - **User Rankings**: View individual rankings across all games
 - **Top Players Reports**: Generate reports for specific time periods (daily, weekly, monthly)
 - **Score History**: Complete history tracking in PostgreSQL
+- **Data Persistence**: Auto-sync Redis from PostgreSQL on startup (no data loss on Redis restart)
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Leaderboard System                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌──────────────┐         ┌──────────────┐         ┌──────────────┐    │
+│   │   Express    │────────▶│  PostgreSQL  │◀───────▶│    Redis     │    │
+│   │   REST API   │         │  (Permanent) │         │  (Real-time) │    │
+│   └──────────────┘         └──────────────┘         └──────────────┘    │
+│          │                        │                        │             │
+│          │                        │                        │             │
+│          ▼                        ▼                        ▼             │
+│   • Authentication          • User accounts          • Sorted sets      │
+│   • Rate limiting           • Score history          • Fast rankings    │
+│   • Input validation        • Game metadata          • Time-based LBs   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+| Action | PostgreSQL | Redis |
+|--------|------------|-------|
+| Submit Score | ✅ Save (permanent) | ✅ Update rankings |
+| Get Leaderboard | ❌ | ✅ Fast query |
+| Get Score History | ✅ Query | ❌ |
+| App Startup | Source of truth | Sync from PostgreSQL |
 
 ## Tech Stack
 
@@ -28,6 +59,7 @@ leaderboard/
 ├── app.js                          # Main entry point
 ├── package.json                    # Dependencies and scripts
 ├── README.md                       # This file
+├── .env                            # Environment variables
 ├── config/
 │   ├── database.js                 # PostgreSQL/Sequelize configuration
 │   └── redis.js                    # Redis connection configuration
@@ -40,7 +72,7 @@ leaderboard/
 │   ├── authController.js           # Authentication logic
 │   ├── gameController.js           # Game CRUD operations
 │   ├── scoreController.js          # Score submission logic
-│   └── leaderboardController.js    # Leaderboard queries
+│   └── leaderboardController.js    # Leaderboard queries & sync
 ├── routes/
 │   ├── auth.js                     # Authentication routes
 │   ├── games.js                    # Game management routes
@@ -53,7 +85,10 @@ leaderboard/
 │   └── errorHandler.js             # Global error handler
 ├── services/
 │   ├── dbSetup.js                  # Database setup with user prompt
-│   └── leaderboardService.js       # Redis leaderboard operations
+│   ├── leaderboardService.js       # Redis leaderboard operations
+│   └── leaderboardSync.js          # Redis ↔ PostgreSQL sync service
+├── seeders/
+│   └── adminSeeder.js              # Create admin user
 └── utils/
     └── apiError.js                 # Custom error class
 ```
@@ -113,8 +148,26 @@ leaderboard/
    npm start
    ```
    
-   On first run, the system will create the database if it doesn't exist.
-   If the database exists, you'll be prompted to choose whether to recreate it.
+   On first run, the system will:
+   - Create the database if it doesn't exist
+   - Prompt to recreate if the database exists
+   - Sync Redis leaderboards from PostgreSQL data
+
+6. **Create an admin user:**
+   ```bash
+   npm run seed:admin
+   ```
+   
+   This creates an admin user with default credentials:
+   - Email: `admin@leaderboard.com`
+   - Password: `admin123`
+   
+   You can customize via environment variables:
+   ```env
+   ADMIN_EMAIL=your-admin@example.com
+   ADMIN_USERNAME=superadmin
+   ADMIN_PASSWORD=your-secure-password
+   ```
 
 ## API Endpoints
 
@@ -129,13 +182,13 @@ leaderboard/
 
 ### Games
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| POST | `/api/games` | Create a new game | Yes |
-| GET | `/api/games` | Get all games | Yes |
-| GET | `/api/games/:gameId` | Get game by ID with stats | Yes |
-| PUT | `/api/games/:gameId` | Update a game | Yes |
-| DELETE | `/api/games/:gameId` | Deactivate a game | Yes |
+| Method | Endpoint | Description | Access |
+|--------|----------|-------------|--------|
+| POST | `/api/games` | Create a new game | Admin only |
+| GET | `/api/games` | Get all games | All users |
+| GET | `/api/games/:gameId` | Get game by ID with stats | All users |
+| PUT | `/api/games/:gameId` | Update a game | Admin only |
+| DELETE | `/api/games/:gameId` | Deactivate a game | Admin only |
 
 ### Scores
 
@@ -156,6 +209,8 @@ leaderboard/
 | GET | `/api/leaderboard/rank/all` | Get user's rankings in all games | Yes |
 | GET | `/api/leaderboard/around` | Get players around current user | Yes |
 | GET | `/api/leaderboard/report/top` | Get top players report | Yes |
+| GET | `/api/leaderboard/sync/status` | Check Redis ↔ PostgreSQL sync status | Yes |
+| POST | `/api/leaderboard/sync` | Force rebuild Redis from PostgreSQL | Yes |
 
 ## Usage Examples
 
@@ -221,19 +276,33 @@ curl -X GET "http://localhost:3000/api/leaderboard/report/top?period=week&limit=
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
+### 7. Check sync status
+
+```bash
+curl -X GET http://localhost:3000/api/leaderboard/sync/status \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+### 8. Force sync Redis from PostgreSQL
+
+```bash
+curl -X POST http://localhost:3000/api/leaderboard/sync \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
 ## Redis Sorted Sets Usage
 
 The system uses Redis sorted sets for efficient real-time leaderboard operations:
 
 ### Key Patterns
 
-| Key Pattern | Description |
-|-------------|-------------|
-| `leaderboard:global` | Global leaderboard (cumulative scores) |
-| `leaderboard:game:{gameId}` | Game-specific leaderboard (best scores) |
-| `leaderboard:daily:{date}` | Daily leaderboard |
-| `leaderboard:weekly:{week}` | Weekly leaderboard |
-| `leaderboard:monthly:{month}` | Monthly leaderboard |
+| Key Pattern | Description | Expiration |
+|-------------|-------------|------------|
+| `leaderboard:global` | Global leaderboard (cumulative scores) | Never |
+| `leaderboard:game:{gameId}` | Game-specific leaderboard (best scores) | Never |
+| `leaderboard:daily:{date}` | Daily leaderboard | 2 days |
+| `leaderboard:weekly:{week}` | Weekly leaderboard | 8 days |
+| `leaderboard:monthly:{month}` | Monthly leaderboard | 32 days |
 
 ### Redis Commands Used
 
@@ -243,6 +312,54 @@ The system uses Redis sorted sets for efficient real-time leaderboard operations
 - `ZREVRANGE` - Get leaderboard entries
 - `ZSCORE` - Get user's score
 - `ZCARD` - Get total players count
+
+## Data Persistence & Sync
+
+### How It Works
+
+PostgreSQL is the **source of truth** for all data. Redis is used as a fast cache for leaderboard queries.
+
+```
+On Application Startup:
+  1. Connect to PostgreSQL ✅
+  2. Connect to Redis ✅
+  3. Check if Redis has leaderboard data
+     ├── YES: Skip sync (data exists)
+     └── NO: Rebuild from PostgreSQL
+           ├── Recalculate global scores
+           ├── Recalculate per-game best scores
+           └── Recalculate daily/weekly/monthly scores
+```
+
+### Recovery Scenarios
+
+| Scenario | What Happens |
+|----------|--------------|
+| Redis restarts | Auto-sync from PostgreSQL on app startup |
+| Redis data corrupted | Use `POST /api/leaderboard/sync` to rebuild |
+| App restarts | Redis data persists, no action needed |
+| Need fresh start | Force sync via API endpoint |
+
+## User Roles
+
+The system supports two user roles:
+
+| Role | Description | Permissions |
+|------|-------------|-------------|
+| `user` | Regular player | Submit scores, view leaderboards, view games |
+| `admin` | Administrator | All user permissions + create/update/delete games |
+
+### Creating an Admin User
+
+**Option 1: Using the seeder script**
+```bash
+npm run seed:admin
+```
+
+**Option 2: Manually update a user's role via SQL**
+```sql
+UPDATE users SET role = 'admin' WHERE email = 'user@example.com';
+```
 
 ## Rate Limiting
 
@@ -273,33 +390,40 @@ Common HTTP status codes:
 ## Database Schema
 
 ### Users Table
-- `id` (UUID, PK)
-- `username` (VARCHAR, unique)
-- `email` (VARCHAR, unique)
-- `password` (VARCHAR, hashed)
-- `isActive` (BOOLEAN)
-- `createdAt` (TIMESTAMP)
-- `updatedAt` (TIMESTAMP)
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `username` | VARCHAR(50) | Unique username |
+| `email` | VARCHAR(100) | Unique email |
+| `password` | VARCHAR(255) | Bcrypt hashed |
+| `role` | ENUM | 'user' or 'admin' (default: 'user') |
+| `isActive` | BOOLEAN | Account status |
+| `createdAt` | TIMESTAMP | Creation date |
+| `updatedAt` | TIMESTAMP | Last update |
 
 ### Games Table
-- `id` (UUID, PK)
-- `name` (VARCHAR, unique)
-- `slug` (VARCHAR, unique)
-- `description` (TEXT)
-- `maxScore` (INTEGER, optional)
-- `isActive` (BOOLEAN)
-- `createdAt` (TIMESTAMP)
-- `updatedAt` (TIMESTAMP)
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `name` | VARCHAR(100) | Unique game name |
+| `slug` | VARCHAR(100) | Auto-generated URL-friendly name |
+| `description` | TEXT | Game description |
+| `maxScore` | INTEGER | Optional max score |
+| `isActive` | BOOLEAN | Game status |
+| `createdAt` | TIMESTAMP | Creation date |
+| `updatedAt` | TIMESTAMP | Last update |
 
 ### Scores Table
-- `id` (UUID, PK)
-- `userId` (UUID, FK)
-- `gameId` (UUID, FK)
-- `score` (INTEGER)
-- `metadata` (JSONB)
-- `submittedAt` (TIMESTAMP)
-- `createdAt` (TIMESTAMP)
-- `updatedAt` (TIMESTAMP)
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `userId` | UUID | Foreign key to users |
+| `gameId` | UUID | Foreign key to games |
+| `score` | INTEGER | Score value |
+| `metadata` | JSONB | Additional data |
+| `submittedAt` | TIMESTAMP | Submission time |
+| `createdAt` | TIMESTAMP | Creation date |
+| `updatedAt` | TIMESTAMP | Last update |
 
 ## Environment Variables
 
@@ -319,8 +443,12 @@ Common HTTP status codes:
 | `PORT` | Server port | 3000 |
 | `NODE_ENV` | Environment | development |
 | `DB_FORCE_RECREATE` | Auto-recreate DB | false |
+| `SCORE_RATE_LIMIT_WINDOW_MS` | Rate limit window | 60000 |
+| `SCORE_RATE_LIMIT_MAX` | Max score submissions | 10 |
+| `ADMIN_EMAIL` | Admin user email | admin@leaderboard.com |
+| `ADMIN_USERNAME` | Admin username | admin |
+| `ADMIN_PASSWORD` | Admin password | admin123 |
 
 ## License
 
 ISC
-

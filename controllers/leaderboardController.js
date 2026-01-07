@@ -1,5 +1,6 @@
 import { Game } from '../models/index.js';
 import * as leaderboardService from '../services/leaderboardService.js';
+import { forceSyncLeaderboards, getSyncStatus } from '../services/leaderboardSync.js';
 import ApiError from '../utils/apiError.js';
 
 /**
@@ -243,12 +244,49 @@ export const getTopPlayersReport = async (req, res, next) => {
   }
 };
 
+/**
+ * Get sync status between Redis and PostgreSQL
+ * GET /api/leaderboard/sync/status
+ */
+export const getLeaderboardSyncStatus = async (req, res, next) => {
+  try {
+    const status = await getSyncStatus();
+
+    res.json({
+      success: true,
+      data: status
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Force sync leaderboards from PostgreSQL to Redis
+ * POST /api/leaderboard/sync
+ */
+export const forceLeaderboardSync = async (req, res, next) => {
+  try {
+    const result = await forceSyncLeaderboards();
+
+    res.json({
+      success: true,
+      message: 'Leaderboards synced successfully from PostgreSQL to Redis',
+      data: result
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export default {
   getGlobalLeaderboard,
   getGameLeaderboard,
   getUserRanking,
   getUserAllRankings,
   getPlayersAround,
-  getTopPlayersReport
+  getTopPlayersReport,
+  getLeaderboardSyncStatus,
+  forceLeaderboardSync
 };
 

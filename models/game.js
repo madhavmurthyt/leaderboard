@@ -48,8 +48,10 @@ const Game = sequelize.define('Game', {
   tableName: 'games',
   timestamps: true,
   hooks: {
-    beforeCreate: (game) => {
-      if (!game.slug) {
+    // Use beforeValidate instead of beforeCreate
+    // This runs BEFORE validation, so slug is set before allowNull check
+    beforeValidate: (game) => {
+      if (game.name && !game.slug) {
         game.slug = game.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
       }
     },

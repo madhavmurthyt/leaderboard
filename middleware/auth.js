@@ -49,5 +49,21 @@ export const verifyToken = async (req, res, next) => {
   }
 };
 
-export default { generateToken, verifyToken };
+/**
+ * Middleware to check if user is an admin
+ * Must be used after verifyToken middleware
+ */
+export const isAdmin = (req, res, next) => {
+  if (!req.user) {
+    return next(new ApiError(401, 'Authentication required.'));
+  }
+
+  if (req.user.role !== 'admin') {
+    return next(new ApiError(403, 'Access denied. Admin privileges required.'));
+  }
+
+  next();
+};
+
+export default { generateToken, verifyToken, isAdmin };
 

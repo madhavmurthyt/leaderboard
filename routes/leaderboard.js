@@ -5,7 +5,9 @@ import {
   getUserRanking,
   getUserAllRankings,
   getPlayersAround,
-  getTopPlayersReport
+  getTopPlayersReport,
+  getLeaderboardSyncStatus,
+  forceLeaderboardSync
 } from '../controllers/leaderboardController.js';
 import { verifyToken } from '../middleware/auth.js';
 import {
@@ -60,6 +62,20 @@ router.get('/around', getPlayersAround);
  * @access  Private
  */
 router.get('/report/top', topPlayersReportValidation, getTopPlayersReport);
+
+/**
+ * @route   GET /api/leaderboard/sync/status
+ * @desc    Get sync status between Redis and PostgreSQL
+ * @access  Private
+ */
+router.get('/sync/status', getLeaderboardSyncStatus);
+
+/**
+ * @route   POST /api/leaderboard/sync
+ * @desc    Force sync leaderboards from PostgreSQL to Redis
+ * @access  Private
+ */
+router.post('/sync', forceLeaderboardSync);
 
 export default router;
 
